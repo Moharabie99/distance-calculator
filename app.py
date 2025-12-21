@@ -4,6 +4,8 @@ import requests
 import time
 from datetime import datetime
 from io import BytesIO
+import folium
+from streamlit_folium import folium_static
 
 # Page configuration
 st.set_page_config(
@@ -177,11 +179,25 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
+def create_excel_output(df):
+    """Create Excel file from dataframe"""
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False, sheet_name='Results')
+    output.seek(0)
+    return output
+
 # Initialize session state
 if 'calculation_mode' not in st.session_state:
     st.session_state.calculation_mode = None
 if 'results_df' not in st.session_state:
     st.session_state.results_df = None
+if 'x_col' not in st.session_state:
+    st.session_state.x_col = None
+if 'y_col' not in st.session_state:
+    st.session_state.y_col = None
+if 'selected_fixed_point' not in st.session_state:
+    st.session_state.selected_fixed_point = None
 
 def detect_coordinate_columns(df):
     """Detect X and Y columns in the dataframe"""
@@ -210,18 +226,26 @@ def calculate_distance_osrm(lon1, lat1, lon2, lat2, retry=3):
     
     for attempt in range(retry):
         try:
-            response = requests.get(url, timeout=10)
+            response = requests.get(url, timeout=5)
             if response.status_code == 200:
                 data = response.json()
                 if data.get('routes'):
                     distance_km = data['routes'][0]['distance'] / 1000
                     duration_min = data['routes'][0]['duration'] / 60
                     return distance_km, duration_min
-            time.sleep(0.5)  # Wait before retry
+            elif response.status_code == 429:  # Rate limited
+                time.sleep(1)  # Wait if rate limited
+            else:
+                time.sleep(0.2)
+        except requests.exceptions.Timeout:
+            if attempt < retry - 1:
+                time.sleep(0.5)
+            else:
+                return None, None
         except Exception as e:
             if attempt == retry - 1:
                 return None, None
-            time.sleep(1)
+            time.sleep(0.3)
     
     return None, None
 
@@ -229,9 +253,10 @@ def calculate_batch_distances(fixed_point, coordinates_list, progress_bar, statu
     """Calculate distances from fixed point to multiple destinations"""
     results = []
     total = len(coordinates_list)
+    failed_count = 0
     
     for idx, (lng, lat, original_data) in enumerate(coordinates_list):
-        status_text.text(f"Calculating distance {idx + 1} of {total}...")
+        status_text.text(f"Processing: {idx + 1}/{total} | Failed: {failed_count}")
         
         distance_km, duration_min = calculate_distance_osrm(
             fixed_point['lng'], 
@@ -240,28 +265,38 @@ def calculate_batch_distances(fixed_point, coordinates_list, progress_bar, statu
             lat
         )
         
+        if distance_km is None:
+            failed_count += 1
+        
         result = original_data.copy()
         result['Distance_KM'] = round(distance_km, 2) if distance_km else 'Error'
         result['Time_Minutes'] = round(duration_min, 2) if duration_min else 'Error'
         results.append(result)
         
         progress_bar.progress((idx + 1) / total)
-        time.sleep(0.3)  # Be respectful to the free API
+        
+        # Smart delay: only add minimal delay every 10 requests
+        if (idx + 1) % 10 == 0:
+            time.sleep(0.1)
     
-    return results
+    return results, failed_count
 
 def calculate_sequential_distances(coordinates_list, progress_bar, status_text):
     """Calculate distances between consecutive points"""
     results = []
     total = len(coordinates_list) - 1
+    failed_count = 0
     
     for idx in range(len(coordinates_list) - 1):
         lng1, lat1, data1 = coordinates_list[idx]
         lng2, lat2, data2 = coordinates_list[idx + 1]
         
-        status_text.text(f"Calculating route {idx + 1} to {idx + 2} of {len(coordinates_list)}...")
+        status_text.text(f"Route {idx + 1}→{idx + 2} of {len(coordinates_list)} | Failed: {failed_count}")
         
         distance_km, duration_min = calculate_distance_osrm(lng1, lat1, lng2, lat2)
+        
+        if distance_km is None:
+            failed_count += 1
         
         result = {
             'From_Point': idx + 1,
@@ -278,17 +313,130 @@ def calculate_sequential_distances(coordinates_list, progress_bar, status_text):
         results.append(result)
         
         progress_bar.progress((idx + 1) / total)
-        time.sleep(0.3)
+        
+        # Smart delay
+        if (idx + 1) % 10 == 0:
+            time.sleep(0.1)
     
-    return results
+    return results, failed_count
 
-def create_excel_output(df):
-    """Create Excel file from dataframe"""
-    output = BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df.to_excel(writer, index=False, sheet_name='Results')
-    output.seek(0)
-    return output
+def create_map_visualization(results_df, mode, fixed_point=None, x_col='X', y_col='Y'):
+    """Create interactive map visualization"""
+    
+    # Determine map center
+    if mode == "fixed":
+        center_lat = fixed_point['lat']
+        center_lng = fixed_point['lng']
+    else:
+        # Use first point in sequential mode
+        center_lat = results_df[f'From_{y_col}'].iloc[0] if f'From_{y_col}' in results_df.columns else 30.0444
+        center_lng = results_df[f'From_{x_col}'].iloc[0] if f'From_{x_col}' in results_df.columns else 31.2357
+    
+    # Create map
+    m = folium.Map(
+        location=[center_lat, center_lng],
+        zoom_start=7,
+        tiles='OpenStreetMap'
+    )
+    
+    if mode == "fixed":
+        # Add fixed point marker (big star)
+        folium.Marker(
+            location=[fixed_point['lat'], fixed_point['lng']],
+            popup=f"<b>Fixed Point</b><br>{fixed_point.get('name', 'Start')}",
+            icon=folium.Icon(color='red', icon='star', prefix='fa'),
+            tooltip="Starting Point"
+        ).add_to(m)
+        
+        # Add destination markers
+        for idx, row in results_df.iterrows():
+            if y_col in row and x_col in row:
+                try:
+                    lat = float(row[y_col])
+                    lng = float(row[x_col])
+                    distance = row.get('Distance_KM', 'N/A')
+                    time_min = row.get('Time_Minutes', 'N/A')
+                    
+                    # Determine marker color based on distance
+                    if isinstance(distance, (int, float)):
+                        if distance < 50:
+                            color = 'green'
+                        elif distance < 150:
+                            color = 'orange'
+                        else:
+                            color = 'red'
+                    else:
+                        color = 'gray'
+                    
+                    popup_text = f"""
+                    <b>Store {idx + 1}</b><br>
+                    Distance: {distance} KM<br>
+                    Time: {time_min} min
+                    """
+                    
+                    folium.CircleMarker(
+                        location=[lat, lng],
+                        radius=6,
+                        popup=popup_text,
+                        color=color,
+                        fill=True,
+                        fillColor=color,
+                        fillOpacity=0.7,
+                        tooltip=f"Store {idx + 1}"
+                    ).add_to(m)
+                    
+                    # Draw line from fixed point to destination
+                    folium.PolyLine(
+                        locations=[[fixed_point['lat'], fixed_point['lng']], [lat, lng]],
+                        color=color,
+                        weight=2,
+                        opacity=0.4
+                    ).add_to(m)
+                except:
+                    continue
+    
+    else:  # Sequential mode
+        # Add route markers and lines
+        for idx, row in results_df.iterrows():
+            try:
+                from_lat = float(row[f'From_{y_col}'])
+                from_lng = float(row[f'From_{x_col}'])
+                
+                # Get next point coordinates
+                if idx < len(results_df) - 1:
+                    to_lat = float(results_df.iloc[idx + 1][f'From_{y_col}'])
+                    to_lng = float(results_df.iloc[idx + 1][f'From_{x_col}'])
+                else:
+                    # Last segment - need to extract to coordinates differently
+                    continue
+                
+                distance = row.get('Distance_KM', 'N/A')
+                time_min = row.get('Time_Minutes', 'N/A')
+                
+                # Add marker for starting point
+                folium.CircleMarker(
+                    location=[from_lat, from_lng],
+                    radius=7,
+                    popup=f"<b>Point {row['From_Point']}</b>",
+                    color='blue',
+                    fill=True,
+                    fillColor='blue',
+                    fillOpacity=0.8,
+                    tooltip=f"Point {row['From_Point']}"
+                ).add_to(m)
+                
+                # Draw line to next point
+                folium.PolyLine(
+                    locations=[[from_lat, from_lng], [to_lat, to_lng]],
+                    color='blue',
+                    weight=3,
+                    opacity=0.7,
+                    popup=f"{distance} KM, {time_min} min"
+                ).add_to(m)
+            except:
+                continue
+    
+    return m
 
 # Header
 st.markdown("""
@@ -396,22 +544,38 @@ if st.session_state.calculation_mode == "fixed":
                         progress_bar = st.progress(0)
                         status_text = st.empty()
                         
+                        start_time = time.time()
+                        
                         # Calculate
-                        results = calculate_batch_distances(
+                        results, failed = calculate_batch_distances(
                             SET_POINTS[selected_point],
                             coordinates_list,
                             progress_bar,
                             status_text
                         )
                         
+                        elapsed_time = time.time() - start_time
+                        
                         # Create results dataframe
                         results_df = pd.DataFrame(results)
                         st.session_state.results_df = results_df
+                        st.session_state.x_col = x_col
+                        st.session_state.y_col = y_col
+                        st.session_state.selected_fixed_point = {
+                            'name': selected_point,
+                            'lat': SET_POINTS[selected_point]['lat'],
+                            'lng': SET_POINTS[selected_point]['lng']
+                        }
                         
                         progress_bar.empty()
                         status_text.empty()
                         
-                        st.success("✅ Calculation complete!")
+                        if failed > 0:
+                            st.warning(f"⚠️ Calculation complete with {failed} failures out of {len(coordinates_list)} requests")
+                        else:
+                            st.success(f"✅ Calculation complete in {elapsed_time:.1f} seconds!")
+                        
+                        st.info(f"⚡ Speed: {len(coordinates_list)/elapsed_time:.1f} requests/second")
                     else:
                         st.error("❌ No valid coordinates found in the file")
             else:
@@ -472,21 +636,32 @@ elif st.session_state.calculation_mode == "sequential":
                         progress_bar = st.progress(0)
                         status_text = st.empty()
                         
+                        start_time = time.time()
+                        
                         # Calculate
-                        results = calculate_sequential_distances(
+                        results, failed = calculate_sequential_distances(
                             coordinates_list,
                             progress_bar,
                             status_text
                         )
                         
+                        elapsed_time = time.time() - start_time
+                        
                         # Create results dataframe
                         results_df = pd.DataFrame(results)
                         st.session_state.results_df = results_df
+                        st.session_state.x_col = x_col
+                        st.session_state.y_col = y_col
                         
                         progress_bar.empty()
                         status_text.empty()
                         
-                        st.success("✅ Route calculation complete!")
+                        if failed > 0:
+                            st.warning(f"⚠️ Route calculation complete with {failed} failures")
+                        else:
+                            st.success(f"✅ Route calculation complete in {elapsed_time:.1f} seconds!")
+                        
+                        st.info(f"⚡ Speed: {len(results)/elapsed_time:.1f} segments/second")
                     else:
                         st.error("❌ Need at least 2 points to calculate a route")
             else:
@@ -522,6 +697,34 @@ if st.session_state.results_df is not None:
     
     # Show results table
     st.dataframe(results_df, use_container_width=True)
+    
+    # Map Visualization
+    st.markdown("### 🗺️ Map Visualization")
+    
+    try:
+        if st.session_state.calculation_mode == "fixed" and st.session_state.selected_fixed_point:
+            map_obj = create_map_visualization(
+                results_df, 
+                "fixed", 
+                st.session_state.selected_fixed_point,
+                st.session_state.x_col,
+                st.session_state.y_col
+            )
+        elif st.session_state.calculation_mode == "sequential":
+            map_obj = create_map_visualization(
+                results_df, 
+                "sequential",
+                None,
+                st.session_state.x_col,
+                st.session_state.y_col
+            )
+        
+        folium_static(map_obj, width=1200, height=600)
+        
+        st.caption("🎨 Color Legend (Fixed Point mode): 🟢 Green = <50 KM | 🟠 Orange = 50-150 KM | 🔴 Red = >150 KM")
+    except Exception as e:
+        st.error(f"Could not generate map: {str(e)}")
+        st.info("Map visualization requires valid coordinates in the results")
     
     # Download button
     st.markdown("### 💾 Download Results")
