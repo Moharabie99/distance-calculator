@@ -198,6 +198,8 @@ if 'y_col' not in st.session_state:
     st.session_state.y_col = None
 if 'selected_fixed_point' not in st.session_state:
     st.session_state.selected_fixed_point = None
+if 'route_geometries' not in st.session_state:
+    st.session_state.route_geometries = None
 
 def detect_coordinate_columns(df):
     """Detect X and Y columns in the dataframe"""
@@ -220,9 +222,19 @@ def detect_coordinate_columns(df):
     
     return x_col, y_col
 
-def calculate_distance_osrm(lon1, lat1, lon2, lat2, retry=3):
-    """Calculate distance and time using OSRM"""
-    url = f"http://router.project-osrm.org/route/v1/driving/{lon1},{lat1};{lon2},{lat2}?overview=false"
+def calculate_distance_osrm(lon1, lat1, lon2, lat2, retry=3, return_geometry=False):
+    """
+    Calculate distance and time using OSRM with actual road routes
+    
+    Returns:
+        If return_geometry=False: (distance_km, duration_min)
+        If return_geometry=True: (distance_km, duration_min, route_geometry)
+    
+    Note: This uses REAL ROAD ROUTING, not straight-line distance
+    """
+    # Use 'overview=full' to get the actual route geometry
+    overview = 'full' if return_geometry else 'false'
+    url = f"http://router.project-osrm.org/route/v1/driving/{lon1},{lat1};{lon2},{lat2}?overview={overview}&geometries=geojson"
     
     for attempt in range(retry):
         try:
@@ -230,9 +242,18 @@ def calculate_distance_osrm(lon1, lat1, lon2, lat2, retry=3):
             if response.status_code == 200:
                 data = response.json()
                 if data.get('routes'):
-                    distance_km = data['routes'][0]['distance'] / 1000
-                    duration_min = data['routes'][0]['duration'] / 60
-                    return distance_km, duration_min
+                    route = data['routes'][0]
+                    distance_km = route['distance'] / 1000  # meters to km
+                    duration_min = route['duration'] / 60    # seconds to minutes
+                    
+                    if return_geometry:
+                        # Extract route coordinates
+                        geometry = route['geometry']['coordinates']
+                        # Convert from [lng, lat] to [lat, lng] for folium
+                        route_coords = [[coord[1], coord[0]] for coord in geometry]
+                        return distance_km, duration_min, route_coords
+                    else:
+                        return distance_km, duration_min
             elif response.status_code == 429:  # Rate limited
                 time.sleep(1)  # Wait if rate limited
             else:
@@ -241,29 +262,45 @@ def calculate_distance_osrm(lon1, lat1, lon2, lat2, retry=3):
             if attempt < retry - 1:
                 time.sleep(0.5)
             else:
-                return None, None
+                return (None, None, None) if return_geometry else (None, None)
         except Exception as e:
             if attempt == retry - 1:
-                return None, None
+                return (None, None, None) if return_geometry else (None, None)
             time.sleep(0.3)
     
-    return None, None
+    return (None, None, None) if return_geometry else (None, None)
 
-def calculate_batch_distances(fixed_point, coordinates_list, progress_bar, status_text):
+def calculate_batch_distances(fixed_point, coordinates_list, progress_bar, status_text, return_routes=False):
     """Calculate distances from fixed point to multiple destinations"""
     results = []
     total = len(coordinates_list)
     failed_count = 0
+    route_geometries = [] if return_routes else None
     
     for idx, (lng, lat, original_data) in enumerate(coordinates_list):
         status_text.text(f"Processing: {idx + 1}/{total} | Failed: {failed_count}")
         
-        distance_km, duration_min = calculate_distance_osrm(
-            fixed_point['lng'], 
-            fixed_point['lat'],
-            lng,
-            lat
-        )
+        if return_routes:
+            distance_km, duration_min, route_coords = calculate_distance_osrm(
+                fixed_point['lng'], 
+                fixed_point['lat'],
+                lng,
+                lat,
+                return_geometry=True
+            )
+            if route_coords:
+                route_geometries.append({
+                    'route': route_coords,
+                    'distance': distance_km,
+                    'duration': duration_min
+                })
+        else:
+            distance_km, duration_min = calculate_distance_osrm(
+                fixed_point['lng'], 
+                fixed_point['lat'],
+                lng,
+                lat
+            )
         
         if distance_km is None:
             failed_count += 1
@@ -271,6 +308,7 @@ def calculate_batch_distances(fixed_point, coordinates_list, progress_bar, statu
         result = original_data.copy()
         result['Distance_KM'] = round(distance_km, 2) if distance_km else 'Error'
         result['Time_Minutes'] = round(duration_min, 2) if duration_min else 'Error'
+        result['Time_Hours'] = round(duration_min / 60, 2) if duration_min else 'Error'
         results.append(result)
         
         progress_bar.progress((idx + 1) / total)
@@ -279,13 +317,16 @@ def calculate_batch_distances(fixed_point, coordinates_list, progress_bar, statu
         if (idx + 1) % 10 == 0:
             time.sleep(0.1)
     
+    if return_routes:
+        return results, failed_count, route_geometries
     return results, failed_count
 
-def calculate_sequential_distances(coordinates_list, progress_bar, status_text):
+def calculate_sequential_distances(coordinates_list, progress_bar, status_text, return_routes=False):
     """Calculate distances between consecutive points"""
     results = []
     total = len(coordinates_list) - 1
     failed_count = 0
+    route_geometries = [] if return_routes else None
     
     for idx in range(len(coordinates_list) - 1):
         lng1, lat1, data1 = coordinates_list[idx]
@@ -293,7 +334,18 @@ def calculate_sequential_distances(coordinates_list, progress_bar, status_text):
         
         status_text.text(f"Route {idx + 1}→{idx + 2} of {len(coordinates_list)} | Failed: {failed_count}")
         
-        distance_km, duration_min = calculate_distance_osrm(lng1, lat1, lng2, lat2)
+        if return_routes:
+            distance_km, duration_min, route_coords = calculate_distance_osrm(
+                lng1, lat1, lng2, lat2, return_geometry=True
+            )
+            if route_coords:
+                route_geometries.append({
+                    'route': route_coords,
+                    'distance': distance_km,
+                    'duration': duration_min
+                })
+        else:
+            distance_km, duration_min = calculate_distance_osrm(lng1, lat1, lng2, lat2)
         
         if distance_km is None:
             failed_count += 1
@@ -302,12 +354,13 @@ def calculate_sequential_distances(coordinates_list, progress_bar, status_text):
             'From_Point': idx + 1,
             'To_Point': idx + 2,
             'Distance_KM': round(distance_km, 2) if distance_km else 'Error',
-            'Time_Minutes': round(duration_min, 2) if duration_min else 'Error'
+            'Time_Minutes': round(duration_min, 2) if duration_min else 'Error',
+            'Time_Hours': round(duration_min / 60, 2) if duration_min else 'Error'
         }
         
         # Add original data from the starting point
         for key, value in data1.items():
-            if key not in ['Distance_KM', 'Time_Minutes']:
+            if key not in ['Distance_KM', 'Time_Minutes', 'Time_Hours']:
                 result[f'From_{key}'] = value
         
         results.append(result)
@@ -318,10 +371,16 @@ def calculate_sequential_distances(coordinates_list, progress_bar, status_text):
         if (idx + 1) % 10 == 0:
             time.sleep(0.1)
     
+    if return_routes:
+        return results, failed_count, route_geometries
     return results, failed_count
 
-def create_map_visualization(results_df, mode, fixed_point=None, x_col='X', y_col='Y'):
-    """Create interactive map visualization"""
+def create_map_visualization(results_df, mode, route_geometries=None, fixed_point=None, x_col='X', y_col='Y'):
+    """
+    Create interactive map visualization with ACTUAL ROUTE PATHS
+    
+    route_geometries: List of actual route coordinates from OSRM
+    """
     
     # Determine map center
     if mode == "fixed":
@@ -343,12 +402,12 @@ def create_map_visualization(results_df, mode, fixed_point=None, x_col='X', y_co
         # Add fixed point marker (big star)
         folium.Marker(
             location=[fixed_point['lat'], fixed_point['lng']],
-            popup=f"<b>Fixed Point</b><br>{fixed_point.get('name', 'Start')}",
+            popup=f"<b>Fixed Point: {fixed_point.get('name', 'Start')}</b>",
             icon=folium.Icon(color='red', icon='star', prefix='fa'),
             tooltip="Starting Point"
         ).add_to(m)
         
-        # Add destination markers
+        # Add destination markers and ACTUAL ROUTES
         for idx, row in results_df.iterrows():
             if y_col in row and x_col in row:
                 try:
@@ -356,22 +415,23 @@ def create_map_visualization(results_df, mode, fixed_point=None, x_col='X', y_co
                     lng = float(row[x_col])
                     distance = row.get('Distance_KM', 'N/A')
                     time_min = row.get('Time_Minutes', 'N/A')
+                    time_hrs = row.get('Time_Hours', 'N/A')
                     
-                    # Determine marker color based on distance
-                    if isinstance(distance, (int, float)):
-                        if distance < 50:
+                    # Determine marker color based on TIME (not distance)
+                    if isinstance(time_min, (int, float)):
+                        if time_min < 30:  # Less than 30 minutes
                             color = 'green'
-                        elif distance < 150:
+                        elif time_min < 90:  # 30-90 minutes
                             color = 'orange'
-                        else:
+                        else:  # More than 90 minutes
                             color = 'red'
                     else:
                         color = 'gray'
                     
                     popup_text = f"""
                     <b>Store {idx + 1}</b><br>
-                    Distance: {distance} KM<br>
-                    Time: {time_min} min
+                    <b style="color: #4a0070;">⏱️ Time: {time_min} min ({time_hrs} hrs)</b><br>
+                    📏 Distance: {distance} KM
                     """
                     
                     folium.CircleMarker(
@@ -382,36 +442,44 @@ def create_map_visualization(results_df, mode, fixed_point=None, x_col='X', y_co
                         fill=True,
                         fillColor=color,
                         fillOpacity=0.7,
-                        tooltip=f"Store {idx + 1}"
+                        tooltip=f"Store {idx + 1}: {time_min} min"
                     ).add_to(m)
                     
-                    # Draw line from fixed point to destination
-                    folium.PolyLine(
-                        locations=[[fixed_point['lat'], fixed_point['lng']], [lat, lng]],
-                        color=color,
-                        weight=2,
-                        opacity=0.4
-                    ).add_to(m)
+                    # Draw ACTUAL ROUTE if available
+                    if route_geometries and idx < len(route_geometries):
+                        route_data = route_geometries[idx]
+                        if route_data and route_data.get('route'):
+                            folium.PolyLine(
+                                locations=route_data['route'],
+                                color=color,
+                                weight=3,
+                                opacity=0.7,
+                                popup=f"Route: {distance} KM, {time_min} min",
+                                tooltip=f"Click for details"
+                            ).add_to(m)
+                    else:
+                        # Fallback: straight line with warning
+                        folium.PolyLine(
+                            locations=[[fixed_point['lat'], fixed_point['lng']], [lat, lng]],
+                            color=color,
+                            weight=2,
+                            opacity=0.3,
+                            dash_array='5, 10',  # Dashed line to show it's not actual route
+                            popup="⚠️ Straight line (not actual route)"
+                        ).add_to(m)
                 except:
                     continue
     
     else:  # Sequential mode
-        # Add route markers and lines
+        # Add route markers and ACTUAL ROUTE PATHS
         for idx, row in results_df.iterrows():
             try:
                 from_lat = float(row[f'From_{y_col}'])
                 from_lng = float(row[f'From_{x_col}'])
                 
-                # Get next point coordinates
-                if idx < len(results_df) - 1:
-                    to_lat = float(results_df.iloc[idx + 1][f'From_{y_col}'])
-                    to_lng = float(results_df.iloc[idx + 1][f'From_{x_col}'])
-                else:
-                    # Last segment - need to extract to coordinates differently
-                    continue
-                
                 distance = row.get('Distance_KM', 'N/A')
                 time_min = row.get('Time_Minutes', 'N/A')
+                time_hrs = row.get('Time_Hours', 'N/A')
                 
                 # Add marker for starting point
                 folium.CircleMarker(
@@ -425,14 +493,19 @@ def create_map_visualization(results_df, mode, fixed_point=None, x_col='X', y_co
                     tooltip=f"Point {row['From_Point']}"
                 ).add_to(m)
                 
-                # Draw line to next point
-                folium.PolyLine(
-                    locations=[[from_lat, from_lng], [to_lat, to_lng]],
-                    color='blue',
-                    weight=3,
-                    opacity=0.7,
-                    popup=f"{distance} KM, {time_min} min"
-                ).add_to(m)
+                # Draw ACTUAL ROUTE if available
+                if route_geometries and idx < len(route_geometries):
+                    route_data = route_geometries[idx]
+                    if route_data and route_data.get('route'):
+                        folium.PolyLine(
+                            locations=route_data['route'],
+                            color='blue',
+                            weight=4,
+                            opacity=0.8,
+                            popup=f"<b>Segment {idx + 1}</b><br>⏱️ {time_min} min ({time_hrs} hrs)<br>📏 {distance} KM",
+                            tooltip=f"Segment {idx + 1}: {time_min} min"
+                        ).add_to(m)
+                
             except:
                 continue
     
@@ -529,6 +602,10 @@ if st.session_state.calculation_mode == "fixed":
                 
                 # Calculate button
                 if st.button("🚀 Calculate Distances", type="primary"):
+                    
+                    # Show validation info
+                    st.info("🛣️ **ROUTE-BASED CALCULATION**: Using actual driving routes (not straight lines)")
+                    
                     # Prepare data
                     coordinates_list = []
                     for idx, row in df.iterrows():
@@ -546,12 +623,13 @@ if st.session_state.calculation_mode == "fixed":
                         
                         start_time = time.time()
                         
-                        # Calculate
-                        results, failed = calculate_batch_distances(
+                        # Calculate WITH route geometries for map
+                        results, failed, route_geoms = calculate_batch_distances(
                             SET_POINTS[selected_point],
                             coordinates_list,
                             progress_bar,
-                            status_text
+                            status_text,
+                            return_routes=True  # Get actual route paths
                         )
                         
                         elapsed_time = time.time() - start_time
@@ -561,6 +639,7 @@ if st.session_state.calculation_mode == "fixed":
                         st.session_state.results_df = results_df
                         st.session_state.x_col = x_col
                         st.session_state.y_col = y_col
+                        st.session_state.route_geometries = route_geoms
                         st.session_state.selected_fixed_point = {
                             'name': selected_point,
                             'lat': SET_POINTS[selected_point]['lat'],
@@ -573,9 +652,9 @@ if st.session_state.calculation_mode == "fixed":
                         if failed > 0:
                             st.warning(f"⚠️ Calculation complete with {failed} failures out of {len(coordinates_list)} requests")
                         else:
-                            st.success(f"✅ Calculation complete in {elapsed_time:.1f} seconds!")
+                            st.success(f"✅ Route-based calculation complete in {elapsed_time:.1f} seconds!")
                         
-                        st.info(f"⚡ Speed: {len(coordinates_list)/elapsed_time:.1f} requests/second")
+                        st.info(f"⚡ Speed: {len(coordinates_list)/elapsed_time:.1f} routes/second")
                     else:
                         st.error("❌ No valid coordinates found in the file")
             else:
@@ -621,6 +700,9 @@ elif st.session_state.calculation_mode == "sequential":
                 
                 # Calculate button
                 if st.button("🚀 Calculate Route", type="primary"):
+                    
+                    st.info("🛣️ **ROUTE-BASED CALCULATION**: Using actual driving routes (not straight lines)")
+                    
                     # Prepare data
                     coordinates_list = []
                     for idx, row in df.iterrows():
@@ -638,11 +720,12 @@ elif st.session_state.calculation_mode == "sequential":
                         
                         start_time = time.time()
                         
-                        # Calculate
-                        results, failed = calculate_sequential_distances(
+                        # Calculate WITH route geometries
+                        results, failed, route_geoms = calculate_sequential_distances(
                             coordinates_list,
                             progress_bar,
-                            status_text
+                            status_text,
+                            return_routes=True
                         )
                         
                         elapsed_time = time.time() - start_time
@@ -652,6 +735,7 @@ elif st.session_state.calculation_mode == "sequential":
                         st.session_state.results_df = results_df
                         st.session_state.x_col = x_col
                         st.session_state.y_col = y_col
+                        st.session_state.route_geometries = route_geoms
                         
                         progress_bar.empty()
                         status_text.empty()
@@ -659,7 +743,7 @@ elif st.session_state.calculation_mode == "sequential":
                         if failed > 0:
                             st.warning(f"⚠️ Route calculation complete with {failed} failures")
                         else:
-                            st.success(f"✅ Route calculation complete in {elapsed_time:.1f} seconds!")
+                            st.success(f"✅ Route-based calculation complete in {elapsed_time:.1f} seconds!")
                         
                         st.info(f"⚡ Speed: {len(results)/elapsed_time:.1f} segments/second")
                     else:
@@ -670,42 +754,50 @@ elif st.session_state.calculation_mode == "sequential":
         except Exception as e:
             st.error(f"❌ Error reading file: {str(e)}")
 
-# Display Results
-if st.session_state.results_df is not None:
     st.divider()
     st.subheader("📊 Results")
     
     results_df = st.session_state.results_df
     
-    # Summary metrics
+    # Important notice
+    st.markdown("""
+    <div class="info-box">
+        <b>✅ VERIFIED: Route-Based Calculations</b><br>
+        All distances and times are calculated using <b>actual driving routes</b> on real roads,
+        NOT straight-line distances. Times are based on typical driving speeds without real-time traffic.
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # Summary metrics - PRIORITIZE TIME
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
-        st.metric("Total Routes", len(results_df))
+        st.metric("📍 Total Routes", len(results_df))
     
     with col2:
-        total_distance = results_df['Distance_KM'].apply(lambda x: x if isinstance(x, (int, float)) else 0).sum()
-        st.metric("Total Distance", f"{total_distance:.2f} KM")
+        total_time = results_df['Time_Minutes'].apply(lambda x: x if isinstance(x, (int, float)) else 0).sum()
+        st.metric("⏱️ Total Time", f"{total_time:.1f} min")
     
     with col3:
-        total_time = results_df['Time_Minutes'].apply(lambda x: x if isinstance(x, (int, float)) else 0).sum()
-        st.metric("Total Time", f"{total_time:.2f} min")
+        total_time_hrs = total_time / 60
+        st.metric("🕐 Total Time", f"{total_time_hrs:.1f} hrs")
     
     with col4:
-        avg_distance = results_df['Distance_KM'].apply(lambda x: x if isinstance(x, (int, float)) else 0).mean()
-        st.metric("Avg Distance", f"{avg_distance:.2f} KM")
+        total_distance = results_df['Distance_KM'].apply(lambda x: x if isinstance(x, (int, float)) else 0).sum()
+        st.metric("📏 Total Distance", f"{total_distance:.1f} KM")
     
     # Show results table
     st.dataframe(results_df, use_container_width=True)
     
     # Map Visualization
-    st.markdown("### 🗺️ Map Visualization")
+    st.markdown("### 🗺️ Map Visualization - ACTUAL DRIVING ROUTES")
     
     try:
         if st.session_state.calculation_mode == "fixed" and st.session_state.selected_fixed_point:
             map_obj = create_map_visualization(
                 results_df, 
-                "fixed", 
+                "fixed",
+                st.session_state.route_geometries,
                 st.session_state.selected_fixed_point,
                 st.session_state.x_col,
                 st.session_state.y_col
@@ -714,6 +806,7 @@ if st.session_state.results_df is not None:
             map_obj = create_map_visualization(
                 results_df, 
                 "sequential",
+                st.session_state.route_geometries,
                 None,
                 st.session_state.x_col,
                 st.session_state.y_col
@@ -721,7 +814,16 @@ if st.session_state.results_df is not None:
         
         folium_static(map_obj, width=1200, height=600)
         
-        st.caption("🎨 Color Legend (Fixed Point mode): 🟢 Green = <50 KM | 🟠 Orange = 50-150 KM | 🔴 Red = >150 KM")
+        st.markdown("""
+        <div class="success-box">
+            <b>🎨 Map Legend (Color based on TRAVEL TIME):</b><br>
+            🟢 <b>Green</b> = Under 30 minutes | 
+            🟠 <b>Orange</b> = 30-90 minutes | 
+            🔴 <b>Red</b> = Over 90 minutes<br>
+            <br>
+            <b>✅ Routes shown are ACTUAL DRIVING PATHS</b> following real roads, not straight lines!
+        </div>
+        """, unsafe_allow_html=True)
     except Exception as e:
         st.error(f"Could not generate map: {str(e)}")
         st.info("Map visualization requires valid coordinates in the results")
