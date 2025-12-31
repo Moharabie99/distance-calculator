@@ -33,14 +33,21 @@ SET_POINTS = {
     'Kafr El Shiekh': {'lat': 31.16529, 'lng': 30.876114}
 }
 
-# Custom CSS matching the previous app
+# Custom CSS with proper dark mode support
 st.markdown("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Segoe+UI:wght@400;600;700&display=swap');
     
+    /* Base styles */
     .stApp {
         background: linear-gradient(135deg, #e4d9f5 0%, #f0e8ff 50%, #e8f4f8 100%);
         font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    }
+    
+    /* Dark mode - targets Streamlit's dark theme class */
+    [data-testid="stAppViewContainer"][class*="dark"] .stApp,
+    .stApp[data-theme="dark"] {
+        background: linear-gradient(135deg, #1a0b2e 0%, #2d1b4e 50%, #1e3a5f 100%) !important;
     }
     
     .block-container {
@@ -56,15 +63,6 @@ st.markdown("""
         font-weight: 400;
     }
     
-    div[data-testid="stExpander"], .stTabs {
-        background: linear-gradient(135deg, #ffffff 0%, #f8f9fa 100%);
-        border-radius: 15px;
-        padding: 20px;
-        box-shadow: 0 8px 25px rgba(74, 0, 112, 0.08);
-        border: 1px solid rgba(74, 0, 112, 0.05);
-        margin-bottom: 20px;
-    }
-    
     .success-box {
         padding: 1.2rem;
         background: linear-gradient(135deg, #d4edda 0%, #c3e6cb 100%);
@@ -72,6 +70,7 @@ st.markdown("""
         border-radius: 10px;
         margin: 1rem 0;
         box-shadow: 0 4px 15px rgba(40, 167, 69, 0.2);
+        color: #155724;
     }
     
     .info-box {
@@ -81,6 +80,7 @@ st.markdown("""
         border-radius: 10px;
         margin: 1rem 0;
         box-shadow: 0 4px 15px rgba(74, 0, 112, 0.2);
+        color: #3d005e;
     }
     
     .warning-box {
@@ -90,6 +90,7 @@ st.markdown("""
         border-radius: 10px;
         margin: 1rem 0;
         box-shadow: 0 4px 15px rgba(255, 193, 7, 0.2);
+        color: #856404;
     }
     
     .stButton>button {
@@ -138,11 +139,6 @@ st.markdown("""
     
     .stProgress > div > div > div > div {
         background: linear-gradient(135deg, #4a0070, #2c5282) !important;
-    }
-    
-    .stSelectbox {
-        background: white;
-        border-radius: 10px;
     }
     
     [data-testid="stMetricValue"] {
@@ -754,78 +750,121 @@ elif st.session_state.calculation_mode == "sequential":
         except Exception as e:
             st.error(f"❌ Error reading file: {str(e)}")
 
-st.divider()
-st.subheader("📊 Results")
+    st.divider()
+    st.subheader("📊 Results")
     
-results_df = st.session_state.results_df
+    results_df = st.session_state.results_df
     
-# Important notice
-st.markdown("""
-<div class="info-box">
-<b>✅ VERIFIED: Route-Based Calculations</b><br>
-All distances and times are calculated using <b>actual driving routes</b> on real roads,
-NOT straight-line distances. Times are based on typical driving speeds without real-time traffic.
-</div>
-""", unsafe_allow_html=True)
-    
-# Summary metrics - PRIORITIZE TIME
-col1, col2, col3, col4 = st.columns(4)
-    
-with col1:
-    st.metric("📍 Total Routes", len(results_df))
-    
-with col2:
-    total_time = results_df['Time_Minutes'].apply(lambda x: x if isinstance(x, (int, float)) else 0).sum()
-    st.metric("⏱️ Total Time", f"{total_time:.1f} min")
-    
-with col3:
-    total_time_hrs = total_time / 60
-    st.metric("🕐 Total Time", f"{total_time_hrs:.1f} hrs")
-    
-with col4:
-    total_distance = results_df['Distance_KM'].apply(lambda x: x if isinstance(x, (int, float)) else 0).sum()
-    st.metric("📏 Total Distance", f"{total_distance:.1f} KM")
-    
-# Show results table
-st.dataframe(results_df, use_container_width=True)
-    
-# Map Visualization
-st.markdown("### 🗺️ Map Visualization - ACTUAL DRIVING ROUTES")
-    
-try:
-    if st.session_state.calculation_mode == "fixed" and st.session_state.selected_fixed_point:
-        map_obj = create_map_visualization(
-            results_df, 
-            "fixed",
-            st.session_state.route_geometries,
-            st.session_state.selected_fixed_point,
-            st.session_state.x_col,
-            st.session_state.y_col
-            )
-    elif st.session_state.calculation_mode == "sequential":
-        map_obj = create_map_visualization(
-            results_df, 
-            "sequential",
-            st.session_state.route_geometries,
-            None,
-            st.session_state.x_col,
-            st.session_state.y_col
-            )
-        
-        folium_static(map_obj, width=1200, height=600)
-        
+    # Important notice
     st.markdown("""
-    <div class="success-box">
-        <b>🎨 Map Legend (Color based on TRAVEL TIME):</b><br>
-        🟢 <b>Green</b> = Under 30 minutes | 
-        🟠 <b>Orange</b> = 30-90 minutes | 
-        🔴 <b>Red</b> = Over 90 minutes<br>
-        <br>
-        <b>✅ Routes shown are ACTUAL DRIVING PATHS</b> following real roads, not straight lines!
+    <div class="info-box">
+        <b>✅ VERIFIED: Route-Based Calculations</b><br>
+        All distances and times are calculated using <b>actual driving routes</b> on real roads,
+        NOT straight-line distances. Times are based on typical driving speeds without real-time traffic.
     </div>
     """, unsafe_allow_html=True)
+    
+    # Summary metrics - PRIORITIZE TIME
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.metric("📍 Total Routes", len(results_df))
+    
+    with col2:
+        total_time = results_df['Time_Minutes'].apply(lambda x: x if isinstance(x, (int, float)) else 0).sum()
+        st.metric("⏱️ Total Time", f"{total_time:.1f} min")
+    
+    with col3:
+        total_time_hrs = total_time / 60
+        st.metric("🕐 Total Time", f"{total_time_hrs:.1f} hrs")
+    
+    with col4:
+        total_distance = results_df['Distance_KM'].apply(lambda x: x if isinstance(x, (int, float)) else 0).sum()
+        st.metric("📏 Total Distance", f"{total_distance:.1f} KM")
+    
+# Display Results
+if st.session_state.results_df is not None:
+    st.divider()
+    st.subheader("📊 Results")
+    
+    results_df = st.session_state.results_df
+    
+    # Important notice
+    st.markdown("""
+    <div class="info-box">
+        <b>✅ VERIFIED: Route-Based Calculations</b><br>
+        All distances and times are calculated using <b>actual driving routes</b> on real roads,
+        NOT straight-line distances. Times are based on typical driving speeds without real-time traffic.
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # Summary metrics - PRIORITIZE TIME
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.metric("📍 Total Routes", len(results_df))
+    
+    with col2:
+        total_time = results_df['Time_Minutes'].apply(lambda x: x if isinstance(x, (int, float)) else 0).sum()
+        st.metric("⏱️ Total Time", f"{total_time:.1f} min")
+    
+    with col3:
+        total_time_hrs = total_time / 60
+        st.metric("🕐 Total Time", f"{total_time_hrs:.1f} hrs")
+    
+    with col4:
+        total_distance = results_df['Distance_KM'].apply(lambda x: x if isinstance(x, (int, float)) else 0).sum()
+        st.metric("📏 Total Distance", f"{total_distance:.1f} KM")
+    
+    # Show results table
+    st.dataframe(results_df, use_container_width=True)
+    
+    # Map Visualization
+    st.markdown("### 🗺️ Map Visualization - ACTUAL DRIVING ROUTES")
+    
+    try:
+        map_obj = None
+        
+        if st.session_state.calculation_mode == "fixed" and st.session_state.selected_fixed_point:
+            st.info("Generating map with actual driving routes...")
+            map_obj = create_map_visualization(
+                results_df, 
+                "fixed",
+                st.session_state.route_geometries,
+                st.session_state.selected_fixed_point,
+                st.session_state.x_col,
+                st.session_state.y_col
+            )
+        elif st.session_state.calculation_mode == "sequential":
+            st.info("Generating sequential route map...")
+            map_obj = create_map_visualization(
+                results_df, 
+                "sequential",
+                st.session_state.route_geometries,
+                None,
+                st.session_state.x_col,
+                st.session_state.y_col
+            )
+        
+        if map_obj:
+            folium_static(map_obj, width=1200, height=600)
+            
+            st.markdown("""
+            <div class="success-box">
+                <b>🎨 Map Legend (Color based on TRAVEL TIME):</b><br>
+                🟢 <b>Green</b> = Under 30 minutes | 
+                🟠 <b>Orange</b> = 30-90 minutes | 
+                🔴 <b>Red</b> = Over 90 minutes<br>
+                <br>
+                <b>✅ Routes shown are ACTUAL DRIVING PATHS</b> following real roads, not straight lines!
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            st.warning("Map could not be generated. Please check your data.")
+            
     except Exception as e:
         st.error(f"Could not generate map: {str(e)}")
+        st.code(f"Error details: {type(e).__name__}: {str(e)}")
         st.info("Map visualization requires valid coordinates in the results")
     
     # Download button
