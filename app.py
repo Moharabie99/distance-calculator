@@ -754,76 +754,76 @@ elif st.session_state.calculation_mode == "sequential":
         except Exception as e:
             st.error(f"❌ Error reading file: {str(e)}")
 
-    st.divider()
-    st.subheader("📊 Results")
+st.divider()
+st.subheader("📊 Results")
     
-    results_df = st.session_state.results_df
+results_df = st.session_state.results_df
     
-    # Important notice
-    st.markdown("""
-    <div class="info-box">
-        <b>✅ VERIFIED: Route-Based Calculations</b><br>
-        All distances and times are calculated using <b>actual driving routes</b> on real roads,
-        NOT straight-line distances. Times are based on typical driving speeds without real-time traffic.
-    </div>
-    """, unsafe_allow_html=True)
+# Important notice
+st.markdown("""
+<div class="info-box">
+<b>✅ VERIFIED: Route-Based Calculations</b><br>
+All distances and times are calculated using <b>actual driving routes</b> on real roads,
+NOT straight-line distances. Times are based on typical driving speeds without real-time traffic.
+</div>
+""", unsafe_allow_html=True)
     
-    # Summary metrics - PRIORITIZE TIME
-    col1, col2, col3, col4 = st.columns(4)
+# Summary metrics - PRIORITIZE TIME
+col1, col2, col3, col4 = st.columns(4)
     
-    with col1:
-        st.metric("📍 Total Routes", len(results_df))
+with col1:
+    st.metric("📍 Total Routes", len(results_df))
     
-    with col2:
-        total_time = results_df['Time_Minutes'].apply(lambda x: x if isinstance(x, (int, float)) else 0).sum()
-        st.metric("⏱️ Total Time", f"{total_time:.1f} min")
+with col2:
+    total_time = results_df['Time_Minutes'].apply(lambda x: x if isinstance(x, (int, float)) else 0).sum()
+    st.metric("⏱️ Total Time", f"{total_time:.1f} min")
     
-    with col3:
-        total_time_hrs = total_time / 60
-        st.metric("🕐 Total Time", f"{total_time_hrs:.1f} hrs")
+with col3:
+    total_time_hrs = total_time / 60
+    st.metric("🕐 Total Time", f"{total_time_hrs:.1f} hrs")
     
-    with col4:
-        total_distance = results_df['Distance_KM'].apply(lambda x: x if isinstance(x, (int, float)) else 0).sum()
-        st.metric("📏 Total Distance", f"{total_distance:.1f} KM")
+with col4:
+    total_distance = results_df['Distance_KM'].apply(lambda x: x if isinstance(x, (int, float)) else 0).sum()
+    st.metric("📏 Total Distance", f"{total_distance:.1f} KM")
     
-    # Show results table
-    st.dataframe(results_df, use_container_width=True)
+# Show results table
+st.dataframe(results_df, use_container_width=True)
     
-    # Map Visualization
-    st.markdown("### 🗺️ Map Visualization - ACTUAL DRIVING ROUTES")
+# Map Visualization
+st.markdown("### 🗺️ Map Visualization - ACTUAL DRIVING ROUTES")
     
-    try:
-        if st.session_state.calculation_mode == "fixed" and st.session_state.selected_fixed_point:
-            map_obj = create_map_visualization(
-                results_df, 
-                "fixed",
-                st.session_state.route_geometries,
-                st.session_state.selected_fixed_point,
-                st.session_state.x_col,
-                st.session_state.y_col
+try:
+    if st.session_state.calculation_mode == "fixed" and st.session_state.selected_fixed_point:
+        map_obj = create_map_visualization(
+            results_df, 
+            "fixed",
+            st.session_state.route_geometries,
+            st.session_state.selected_fixed_point,
+            st.session_state.x_col,
+            st.session_state.y_col
             )
-        elif st.session_state.calculation_mode == "sequential":
-            map_obj = create_map_visualization(
-                results_df, 
-                "sequential",
-                st.session_state.route_geometries,
-                None,
-                st.session_state.x_col,
-                st.session_state.y_col
+    elif st.session_state.calculation_mode == "sequential":
+        map_obj = create_map_visualization(
+            results_df, 
+            "sequential",
+            st.session_state.route_geometries,
+            None,
+            st.session_state.x_col,
+            st.session_state.y_col
             )
         
         folium_static(map_obj, width=1200, height=600)
         
-        st.markdown("""
-        <div class="success-box">
-            <b>🎨 Map Legend (Color based on TRAVEL TIME):</b><br>
-            🟢 <b>Green</b> = Under 30 minutes | 
-            🟠 <b>Orange</b> = 30-90 minutes | 
-            🔴 <b>Red</b> = Over 90 minutes<br>
-            <br>
-            <b>✅ Routes shown are ACTUAL DRIVING PATHS</b> following real roads, not straight lines!
-        </div>
-        """, unsafe_allow_html=True)
+    st.markdown("""
+    <div class="success-box">
+        <b>🎨 Map Legend (Color based on TRAVEL TIME):</b><br>
+        🟢 <b>Green</b> = Under 30 minutes | 
+        🟠 <b>Orange</b> = 30-90 minutes | 
+        🔴 <b>Red</b> = Over 90 minutes<br>
+        <br>
+        <b>✅ Routes shown are ACTUAL DRIVING PATHS</b> following real roads, not straight lines!
+    </div>
+    """, unsafe_allow_html=True)
     except Exception as e:
         st.error(f"Could not generate map: {str(e)}")
         st.info("Map visualization requires valid coordinates in the results")
