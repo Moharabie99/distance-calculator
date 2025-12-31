@@ -33,14 +33,54 @@ SET_POINTS = {
     'Kafr El Shiekh': {'lat': 31.16529, 'lng': 30.876114}
 }
 
-# Custom CSS matching the previous app
+# Custom CSS matching the previous app + Dark Mode Support
 st.markdown("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Segoe+UI:wght@400;600;700&display=swap');
     
+    /* Light and Dark Mode Support */
     .stApp {
         background: linear-gradient(135deg, #e4d9f5 0%, #f0e8ff 50%, #e8f4f8 100%);
         font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    }
+    
+    /* Dark mode detection */
+    @media (prefers-color-scheme: dark) {
+        .stApp {
+            background: linear-gradient(135deg, #1a0b2e 0%, #2d1b4e 50%, #1e3a5f 100%);
+        }
+        
+        /* Adjust text colors for dark mode */
+        h1, h2, h3, p, span, div {
+            color: #e0e0e0 !important;
+        }
+        
+        /* Adjust boxes for dark mode */
+        .info-box {
+            background: linear-gradient(135deg, #2d1b4e 0%, #1e3a5f 100%);
+            border-left-color: #7c4dff;
+        }
+        
+        .success-box {
+            background: linear-gradient(135deg, #1a4d2e 0%, #2d5f3e 100%);
+            border-left-color: #4caf50;
+        }
+        
+        .warning-box {
+            background: linear-gradient(135deg, #4d3a1a 0%, #5f4a2d 100%);
+            border-left-color: #ffc107;
+        }
+        
+        /* Adjust dataframes for dark mode */
+        .stDataFrame {
+            background: #2d2d2d;
+        }
+        
+        /* File uploader dark mode */
+        .stFileUploader {
+            background: #2d2d2d;
+            border-color: #7c4dff;
+        }
     }
     
     .block-container {
@@ -56,6 +96,12 @@ st.markdown("""
         font-weight: 400;
     }
     
+    @media (prefers-color-scheme: dark) {
+        .sub-header {
+            color: #b0b0b0;
+        }
+    }
+    
     div[data-testid="stExpander"], .stTabs {
         background: linear-gradient(135deg, #ffffff 0%, #f8f9fa 100%);
         border-radius: 15px;
@@ -63,6 +109,13 @@ st.markdown("""
         box-shadow: 0 8px 25px rgba(74, 0, 112, 0.08);
         border: 1px solid rgba(74, 0, 112, 0.05);
         margin-bottom: 20px;
+    }
+    
+    @media (prefers-color-scheme: dark) {
+        div[data-testid="stExpander"], .stTabs {
+            background: linear-gradient(135deg, #2d2d2d 0%, #3a3a3a 100%);
+            border-color: rgba(124, 77, 255, 0.3);
+        }
     }
     
     .success-box {
@@ -145,10 +198,32 @@ st.markdown("""
         border-radius: 10px;
     }
     
+    @media (prefers-color-scheme: dark) {
+        .stSelectbox {
+            background: #2d2d2d;
+        }
+        
+        /* Fix select box text in dark mode */
+        .stSelectbox > div > div {
+            background-color: #2d2d2d !important;
+            color: #e0e0e0 !important;
+        }
+    }
+    
     [data-testid="stMetricValue"] {
         font-size: 2rem;
         font-weight: 700;
         color: #3d005e;
+    }
+    
+    @media (prefers-color-scheme: dark) {
+        [data-testid="stMetricValue"] {
+            color: #b197fc;
+        }
+        
+        [data-testid="stMetricLabel"] {
+            color: #b0b0b0 !important;
+        }
     }
     
     .stDataFrame {
@@ -164,9 +239,21 @@ st.markdown("""
         background: linear-gradient(90deg, transparent, #4a0070, transparent);
     }
     
+    @media (prefers-color-scheme: dark) {
+        hr {
+            background: linear-gradient(90deg, transparent, #7c4dff, transparent);
+        }
+    }
+    
     h1, h2, h3 {
         color: #3d005e;
         font-weight: 700;
+    }
+    
+    @media (prefers-color-scheme: dark) {
+        h1, h2, h3 {
+            color: #b197fc;
+        }
     }
     
     #MainMenu {visibility: hidden;}
@@ -175,6 +262,18 @@ st.markdown("""
     
     .element-container {
         margin-bottom: 0.5rem;
+    }
+    
+    /* Force text readability in all modes */
+    .stMarkdown, .stText {
+        color: inherit;
+    }
+    
+    @media (prefers-color-scheme: dark) {
+        /* Ensure all text is readable in dark mode */
+        .stMarkdown p, .stText, label, .stCaption {
+            color: #e0e0e0 !important;
+        }
     }
     </style>
 """, unsafe_allow_html=True)
@@ -786,6 +885,40 @@ elif st.session_state.calculation_mode == "sequential":
         total_distance = results_df['Distance_KM'].apply(lambda x: x if isinstance(x, (int, float)) else 0).sum()
         st.metric("📏 Total Distance", f"{total_distance:.1f} KM")
     
+# Display Results
+if st.session_state.results_df is not None:
+    st.divider()
+    st.subheader("📊 Results")
+    
+    results_df = st.session_state.results_df
+    
+    # Important notice
+    st.markdown("""
+    <div class="info-box">
+        <b>✅ VERIFIED: Route-Based Calculations</b><br>
+        All distances and times are calculated using <b>actual driving routes</b> on real roads,
+        NOT straight-line distances. Times are based on typical driving speeds without real-time traffic.
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # Summary metrics - PRIORITIZE TIME
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.metric("📍 Total Routes", len(results_df))
+    
+    with col2:
+        total_time = results_df['Time_Minutes'].apply(lambda x: x if isinstance(x, (int, float)) else 0).sum()
+        st.metric("⏱️ Total Time", f"{total_time:.1f} min")
+    
+    with col3:
+        total_time_hrs = total_time / 60
+        st.metric("🕐 Total Time", f"{total_time_hrs:.1f} hrs")
+    
+    with col4:
+        total_distance = results_df['Distance_KM'].apply(lambda x: x if isinstance(x, (int, float)) else 0).sum()
+        st.metric("📏 Total Distance", f"{total_distance:.1f} KM")
+    
     # Show results table
     st.dataframe(results_df, use_container_width=True)
     
@@ -802,6 +935,7 @@ elif st.session_state.calculation_mode == "sequential":
                 st.session_state.x_col,
                 st.session_state.y_col
             )
+            folium_static(map_obj, width=1200, height=600)
         elif st.session_state.calculation_mode == "sequential":
             map_obj = create_map_visualization(
                 results_df, 
@@ -811,8 +945,7 @@ elif st.session_state.calculation_mode == "sequential":
                 st.session_state.x_col,
                 st.session_state.y_col
             )
-        
-        folium_static(map_obj, width=1200, height=600)
+            folium_static(map_obj, width=1200, height=600)
         
         st.markdown("""
         <div class="success-box">
